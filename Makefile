@@ -35,6 +35,7 @@
 #   USE_OPENSSL             : enable use of OpenSSL. Recommended, but see below.
 #   USE_OPENSSL_AWSLC       : enable use of AWS-LC
 #   USE_OPENSSL_WOLFSSL     : enable use of wolfSSL with the OpenSSL API
+#   USE_JPSSL               : enable use of JPSSL with the OpenSSL API
 #   USE_ECH                 : enable use of ECH with the OpenSSL API
 #   USE_QUIC                : enable use of QUIC with the quictls API (quictls, libressl, boringssl)
 #   USE_QUIC_OPENSSL_COMPAT : enable use of QUIC with the standard openssl API (limited features)
@@ -121,8 +122,10 @@
 #   PCRE_INC       : force the include path to libpcre ($PCREDIR/inc)
 #   PCRE2_CONFIG   : force the binary path to get pcre2 config (by default
 #                                                               pcre2-config)
-#   SSL_LIB        : force the lib path to libssl/libcrypto
-#   SSL_INC        : force the include path to libssl/libcrypto
+#   SSL_LIB        : force the lib path to libssl/libcrypto (or libjpssl_cpu
+#                    when USE_JPSSL is set)
+#   SSL_INC        : force the include path to libssl/libcrypto (or to the
+#                    JPSSL headers when USE_JPSSL is set)
 #   LUA_LIB        : force the lib path to lua
 #   LUA_INC        : force the include path to lua
 #   LUA_LIB_NAME   : force the lib name (or automatically evaluated, by order of
@@ -341,6 +344,7 @@ use_opts = USE_EPOLL USE_KQUEUE USE_NETFILTER USE_POLL                        \
            USE_TPROXY USE_LINUX_TPROXY USE_LINUX_CAP                          \
            USE_LINUX_SPLICE USE_LIBCRYPT USE_CRYPT_H USE_ENGINE               \
            USE_GETADDRINFO USE_OPENSSL USE_OPENSSL_WOLFSSL USE_OPENSSL_AWSLC  \
+           USE_JPSSL                                                        \
            USE_ECH USE_TRACE USE_FCGI USE_H2 USE_SPOE                         \
            USE_SSL USE_LUA USE_ACCEPT4 USE_CLOSEFROM USE_ZLIB USE_SLZ         \
            USE_CPU_AFFINITY USE_TFO USE_NS USE_DL USE_RT USE_LIBATOMIC        \
@@ -663,10 +667,21 @@ ifneq ($(USE_OPENSSL_AWSLC:0=),)
   OPTIONS_OBJS   += src/fips.o
 endif
 
+# This is for the JPSSL variant. Setting it implies OPENSSL so it's not
+# necessary to set the latter. JPSSL provides its own C++ TLS/crypto API, so
+# until an OpenSSL-compatible C layer is available, this option only replaces
+# the linked library and keeps the OpenSSL API in the source code.
+ifneq ($(USE_JPSSL:0=),)
+  SSL_CFLAGS      := $(if $(SSL_INC),-I$(SSL_INC))
+  SSL_LDFLAGS     := $(if $(SSL_LIB),-L$(SSL_LIB)) -ljpssl_cpu
+  # always automatically set USE_OPENSSL
+  USE_OPENSSL     := $(if $(USE_OPENSSL:0=),$(USE_OPENSSL:0=),implicit)
+endif
+
 # This is for any variant of the OpenSSL API. By default it uses OpenSSL.
 ifneq ($(USE_OPENSSL:0=),)
   # only preset these for the regular openssl
-  ifeq ($(USE_OPENSSL_WOLFSSL:0=),)
+  ifeq ($(USE_OPENSSL_WOLFSSL:0=)$(USE_JPSSL:0=),)
     SSL_CFLAGS    := $(if $(SSL_INC),-I$(SSL_INC))
     SSL_LDFLAGS   := $(if $(SSL_LIB),-L$(SSL_LIB)) -lssl -lcrypto
   endif
@@ -678,6 +693,17 @@ ifneq ($(USE_OPENSSL:0=),)
   ifneq ($(USE_TRACE:0=),)
     OPTIONS_OBJS += src/ssl_trace.o
   endif
+endif
+
+ifneq ($(USE_JPSSL:0=),)
+  # The JPSSL transport layer is implemented in C++ (src/ssl_sock.cpp) and
+  # replaces the OpenSSL-based src/ssl_sock.c. Compile it with $(CXX) and
+  # link the C++ runtime alongside libjpssl_cpu.
+  OPTIONS_OBJS := $(filter-out src/ssl_sock.o,$(OPTIONS_OBJS))
+  OPTIONS_OBJS += src/ssl_sock.o
+  src/ssl_sock.o: src/ssl_sock.cpp
+	$(Q)$(CXX) -std=c++20 $(CXXFLAGS) $(COPTS) -c -o $@ $<
+  SSL_LDFLAGS += -lstdc++
 endif
 
 ifneq ($(USE_ENGINE:0=),)
@@ -706,6 +732,17 @@ OPTIONS_OBJS += src/mux_quic.o src/h3.o src/quic_rx.o src/quic_tx.o	\
                 src/qpack-tbl.o src/quic_cc_drs.o src/quic_fctl.o	\
                 src/quic_enc.o src/qcm_qmux.o src/xprt_qmux.o		\
                 src/mpring.o
+endif
+
+ifneq ($(USE_JPSSL:0=),)
+  # The QUIC TLS layers are also implemented in C++ with JPSSL
+  # (src/quic_tls.cpp, src/quic_ssl.cpp) and replace the OpenSSL ones.
+  OPTIONS_OBJS := $(filter-out src/quic_tls.o src/quic_ssl.o,$(OPTIONS_OBJS))
+  OPTIONS_OBJS += src/quic_tls.o src/quic_ssl.o
+  src/quic_tls.o: src/quic_tls.cpp
+	$(Q)$(CXX) -std=c++20 $(CXXFLAGS) $(COPTS) -c -o $@ $<
+  src/quic_ssl.o: src/quic_ssl.cpp
+	$(Q)$(CXX) -std=c++20 $(CXXFLAGS) $(COPTS) -c -o $@ $<
 endif
 
 ifneq ($(USE_QUIC_OPENSSL_COMPAT:0=),)
@@ -912,6 +949,7 @@ all:
 	@echo "Common features you might want to include in your build are:"
 	@echo
 	@echo "    USE_OPENSSL=1 - Support for TLS encrypted connections"
+	@echo "    USE_JPSSL=1   - Use JPSSL as the TLS library instead of OpenSSL"
 	@echo "    USE_ZLIB=1    - Support for HTTP response compression"
 	@echo "    USE_PCRE=1    - Support for PCRE regular expressions"
 	@echo "    USE_LUA=1     - Support for dynamic processing using Lua"

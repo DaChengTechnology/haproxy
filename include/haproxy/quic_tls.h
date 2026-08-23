@@ -29,6 +29,9 @@
 #include <haproxy/quic_tx.h>
 #include <haproxy/quic_trace.h>
 #include <haproxy/trace.h>
+#ifdef USE_JPSSL
+#include <haproxy/quic_jpssl.h>
+#endif
 
 int quic_tls_finalize(struct quic_conn *qc, int server);
 void quic_tls_ctx_free(struct quic_tls_ctx **ctx);
@@ -798,26 +801,38 @@ static inline void quic_tls_ctx_secs_free(struct quic_tls_ctx *ctx)
 	}
 
 	/* RX HP protection */
-#ifdef QUIC_AEAD_API
+#ifdef USE_JPSSL
+	jpssl_quic_ctx_free(ctx->rx.hp_ctx);
+#elif defined(QUIC_AEAD_API)
 	if (ctx->rx.hp_ctx != EVP_CIPHER_CTX_CHACHA20)
 		EVP_CIPHER_CTX_free(ctx->rx.hp_ctx);
 #else
 	EVP_CIPHER_CTX_free(ctx->rx.hp_ctx);
 #endif
 	/* RX AEAD decryption */
+#ifdef USE_JPSSL
+	jpssl_quic_ctx_free(ctx->rx.ctx);
+#else
 	QUIC_AEAD_CTX_free(ctx->rx.ctx);
+#endif
 	pool_free(pool_head_quic_tls_iv,  ctx->rx.iv);
 	pool_free(pool_head_quic_tls_key, ctx->rx.key);
 
 	/* TX HP protection */
-#ifdef QUIC_AEAD_API
+#ifdef USE_JPSSL
+	jpssl_quic_ctx_free(ctx->tx.hp_ctx);
+#elif defined(QUIC_AEAD_API)
 	if (ctx->tx.hp_ctx != EVP_CIPHER_CTX_CHACHA20)
 		EVP_CIPHER_CTX_free(ctx->tx.hp_ctx);
 #else
 	EVP_CIPHER_CTX_free(ctx->tx.hp_ctx);
 #endif
 	/* TX AEAD encryption */
+#ifdef USE_JPSSL
+	jpssl_quic_ctx_free(ctx->tx.ctx);
+#else
 	QUIC_AEAD_CTX_free(ctx->tx.ctx);
+#endif
 	pool_free(pool_head_quic_tls_iv,  ctx->tx.iv);
 	pool_free(pool_head_quic_tls_key, ctx->tx.key);
 
@@ -832,16 +847,16 @@ static inline int quic_tls_ctx_keys_alloc(struct quic_tls_ctx *ctx)
 	if (ctx->rx.key)
 		goto write;
 
-	if (!(ctx->rx.iv = pool_alloc(pool_head_quic_tls_iv)) ||
-	    !(ctx->rx.key = pool_alloc(pool_head_quic_tls_key)))
+	if (!(ctx->rx.iv = (unsigned char *)pool_alloc(pool_head_quic_tls_iv)) ||
+	    !(ctx->rx.key = (unsigned char *)pool_alloc(pool_head_quic_tls_key)))
 		goto err;
 
  write:
 	if (ctx->tx.key)
 		goto out;
 
-	if (!(ctx->tx.iv = pool_alloc(pool_head_quic_tls_iv)) ||
-	    !(ctx->tx.key = pool_alloc(pool_head_quic_tls_key)))
+	if (!(ctx->tx.iv = (unsigned char *)pool_alloc(pool_head_quic_tls_iv)) ||
+	    !(ctx->tx.key = (unsigned char *)pool_alloc(pool_head_quic_tls_key)))
 		goto err;
 
 	ctx->rx.ivlen = ctx->tx.ivlen = QUIC_TLS_IV_LEN;
@@ -868,9 +883,17 @@ static inline void quic_tls_secrets_keys_free(struct quic_tls_secrets *secs)
 	}
 
 	/* HP protection */
+#ifdef USE_JPSSL
+	jpssl_quic_ctx_free(secs->hp_ctx);
+#else
 	EVP_CIPHER_CTX_free(secs->hp_ctx);
+#endif
 	/* AEAD decryption */
+#ifdef USE_JPSSL
+	jpssl_quic_ctx_free(secs->ctx);
+#else
 	QUIC_AEAD_CTX_free(secs->ctx);
+#endif
 	pool_free(pool_head_quic_tls_iv,  secs->iv);
 	pool_free(pool_head_quic_tls_key, secs->key);
 
@@ -882,8 +905,8 @@ static inline void quic_tls_secrets_keys_free(struct quic_tls_secrets *secs)
  */
 static inline int quic_tls_secrets_keys_alloc(struct quic_tls_secrets *secs)
 {
-	if (!(secs->iv = pool_alloc(pool_head_quic_tls_iv)) ||
-	    !(secs->key = pool_alloc(pool_head_quic_tls_key)))
+	if (!(secs->iv = (unsigned char *)pool_alloc(pool_head_quic_tls_iv)) ||
+	    !(secs->key = (unsigned char *)pool_alloc(pool_head_quic_tls_key)))
 		goto err;
 
 	secs->ivlen = QUIC_TLS_IV_LEN;
